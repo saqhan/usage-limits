@@ -30,18 +30,37 @@ function line(list: SessionRateLimit[], now: number): string | undefined {
     .join(' · ')
 }
 
+// Окно, чей сброс уже прошёл, показываем как 0% без времени:
+// сохранённая цифра для него больше не верна.
+function freshen(list: SessionRateLimit[], now: number): SessionRateLimit[] {
+  return list.map(l => {
+    const resetAt = l.resetsAt ? new Date(l.resetsAt).getTime() : NaN
+    return resetAt <= now ? { kind: l.kind, percentUsed: 0 } : l
+  })
+}
+
+const LAST = 'last'
+
 export const register: Register = on => {
-  // Первое значение — сразу при старте, не дожидаясь хода.
+  // Новая сессия цифр не знает до первого ответа API, поэтому
+  // при старте показываем последние сохранённые (они общие для всех сессий).
   on('session.start', async ($, e, next) => {
     const r = await next(e)
+    const now = await $.clock.now()
     const usage = await $.session.usage()
-    $.ui.status(line(usage.rateLimits, await $.clock.now()))
+    const saved = (await $.store.get(LAST)) as SessionRateLimit[] | undefined
+    const list = usage.rateLimits.length > 0 ? usage.rateLimits : freshen(saved ?? [], now)
+    $.ui.status(line(list, now))
     return r
   })
 
   // Движок сам присылает новые цифры после хода и при сдвиге окна на пункт.
+  // Пустой список не стирает строку: оставляем последнее известное.
   on('session.measure', async ($, e, next) => {
-    $.ui.status(line(e.rateLimits, await $.clock.now()))
+    if (e.rateLimits.length > 0) {
+      await $.store.set(LAST, e.rateLimits)
+      $.ui.status(line(e.rateLimits, await $.clock.now()))
+    }
     return next(e)
   })
 }
